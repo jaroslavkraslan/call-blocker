@@ -1,9 +1,13 @@
 package sk.jaja.callblocker
 
-import android.telecom.Call
-import android.telecom.CallScreeningService
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 import android.net.Uri
 import android.provider.ContactsContract
+import android.telecom.Call
+import android.telecom.CallScreeningService
+import androidx.core.app.NotificationCompat
 
 class CustomCallBlockerService : CallScreeningService() {
 
@@ -55,12 +59,15 @@ class CustomCallBlockerService : CallScreeningService() {
         }
 
         // 3. Odoslanie rozhodnutia systému
-        val response = CallScreeningService.CallResponse.Builder()
+        val response = CallResponse.Builder()
         if (shouldBlock) {
             response.setDisallowCall(true)
             response.setRejectCall(true)
             response.setSkipCallLog(false)      // Uvidíte ich v histórii ako zablokované
-            response.setSkipNotification(false) // Tichá notifikácia v lište (telefón nezazvoní)
+            response.setSkipNotification(true)  // Preskočíme predvolenú systémovú, odpálime vlastnú podrobnejšiu
+
+            // Vystrelenie vlastnej notifikácie s informáciou o zablokovanom čísle
+            sendBlockNotification(phoneNumber)
         } else {
             response.setDisallowCall(false)
             response.setRejectCall(false)
@@ -72,26 +79,57 @@ class CustomCallBlockerService : CallScreeningService() {
     }
 
     /**
+     * Pomocná funkcia na vytvorenie tichej notifikácie s číslom v lište.
+     */
+    private fun sendBlockNotification(phoneNumber: String) {
+        val channelId = "jaja_blocker_notifications"
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Vytvorenie notifikačného kanála (vyžadované pre Android 8.0+)
+        val channel = NotificationChannel(
+            channelId,
+            "Zablokované hovory",
+            NotificationManager.IMPORTANCE_LOW // IMPORTANCE_LOW zabezpečí tiché doručenie bez pípnutia a vibrácií
+        ).apply {
+            description = "Notifikácie o hovoroch zablokovaných aplikáciou Jaja Blocker"
+        }
+        notificationManager.createNotificationChannel(channel)
+
+        // Krajšie formátovanie textu, ak je číslo prázdne/skryté
+        val displayText = if (phoneNumber.isBlank()) "Skryté / Utajené číslo" else phoneNumber
+
+        // Zostavenie tela notifikácie
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_notification_clear_all) // Použije natívnu systémovú ikonu
+            .setContentTitle("Hovor zablokovaný")
+            .setContentText("Číslo: $displayText")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setAutoCancel(true) // Kliknutím sa notifikácia zmaže z lišty
+            .build()
+
+        // Unikátne ID podľa času zaistí, že sa notifikácie nebudú prepisovať, ale pekne vrstviť pod seba
+        val notificationId = System.currentTimeMillis().toInt()
+        notificationManager.notify(notificationId, notification)
+    }
+
+    /**
      * Inteligentné overenie čísla v kontaktoch zariadenia.
      * Využíva PhoneLookup, ktorý ignoruje formátovanie, medzery a úspešne spáruje +421 aj 09 formáty.
      */
     private fun checkContacts(phoneNumber: String): Boolean {
         if (phoneNumber.isEmpty()) return false
 
-        // Vytvorenie filtračného URI pre vyhľadávanie konkrétneho čísla
         val uri = Uri.withAppendedPath(
             ContactsContract.PhoneLookup.CONTENT_FILTER_URI,
             Uri.encode(phoneNumber)
         )
 
-        // Na overenie existencie nám stačí vytiahnuť ID kontaktu
         val projection = arrayOf(ContactsContract.PhoneLookup._ID)
         var isSaved = false
 
         try {
             contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    // Ak cursor obsahuje aspoň jeden riadok, číslo sa nachádza v kontaktoch
                     isSaved = true
                 }
             }
